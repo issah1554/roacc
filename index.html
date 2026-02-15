@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>ESP32 Accident Dashboard (MQTT)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        body {
+            margin: 0;
+            font-family: system-ui, Arial;
+        }
+
+        #top {
+            padding: 10px 12px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        #map {
+            height: calc(100vh - 130px);
+        }
+
+        #log {
+            height: 90px;
+            overflow: auto;
+            padding: 10px 12px;
+            border-top: 1px solid #ddd;
+            font-size: 13px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .pill {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 999px;
+        }
+
+        .bad {
+            border-color: #d33;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="top">
+        <div class="row">
+            <div class="pill" id="status">Disconnected</div>
+            <div class="pill">GPS topic: <b id="gpsTopic"></b></div>
+            <div class="pill">Event topic: <b id="evtTopic"></b></div>
+        </div>
+    </div>
+    <div id="map"></div>
+    <div id="log"></div>
+
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const DEVICE_ID = "esp32-01";
+        const GPS_TOPIC = `accident/${DEVICE_ID}/gps`;
+        const EVT_TOPIC = `accident/${DEVICE_ID}/event`;
+
+        document.getElementById("gpsTopic").textContent = GPS_TOPIC;
+        document.getElementById("evtTopic").textContent = EVT_TOPIC;
+
+        const statusEl = document.getElementById("status");
+        const logEl = document.getElementById("log");
+
+        function log(msg) {
+            const line = document.createElement("div");
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.appendChild(line);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        const map = L.map('map').setView([-6.7924, 39.2083], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+        let marker = L.marker([-6.7924, 39.2083]).addTo(map).bindPopup("Device: " + DEVICE_ID);
+        let accidentMarker = null;
+
+        // Public broker WS (unencrypted)
+        const client = mqtt.connect("ws://test.mosquitto.org:8080", {
+            clientId: "webdash-" + DEVICE_ID + "-" + Math.random().toString(16).slice(2),
+            keepalive: 30,
+            reconnectPeriod: 1500
+        });
+
+        client.on("connect", () => {
+            statusEl.textContent = "Connected";
+            statusEl.classList.remove("bad");
+            log("MQTT connected");
+            client.subscribe([GPS_TOPIC, EVT_TOPIC]);
+        });
+
+        client.on("reconnect", () => log("MQTT reconnecting..."));
+        client.on("close", () => {
+            statusEl.textContent = "Disconnected";
+            statusEl.classList.add("bad");
+        });
+        client.on("error", (err) => log("MQTT error: " + err.message));
+
+        client.on("message", (topic, payload) => {
+            let data;
+            try { data = JSON.parse(payload.toString()); }
+            catch { return; }
+
+            if (topic === GPS_TOPIC) {
+                const { lat, lon } = data;
+                marker.setLatLng([lat, lon]);
+                marker.setPopupContent(`Device: ${DEVICE_ID}<br>Lat: ${lat}<br>Lon: ${lon}`);
+                map.panTo([lat, lon], { animate: true });
+            }
+
+            if (topic === EVT_TOPIC) {
+                log("ACCIDENT event: " + payload.toString());
+                const { lat, lon, acc_ms2 } = data;
+
+                if (accidentMarker) map.removeLayer(accidentMarker);
+                accidentMarker = L.circleMarker([lat, lon], { radius: 10 }).addTo(map)
+                    .bindPopup(`ACCIDENT<br>acc: ${acc_ms2} m/s²<br>${lat}, ${lon}`)
+                    .openPopup();
+            }
+        });
+    </script>
+</body>
+
+</html>
