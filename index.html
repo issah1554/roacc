@@ -86,8 +86,11 @@
         let marker = L.marker([-6.7924, 39.2083]).addTo(map).bindPopup("Device: " + DEVICE_ID);
         let accidentMarker = null;
 
-        // Public broker WS (unencrypted)
-        const client = mqtt.connect("ws://test.mosquitto.org:8080", {
+        // Use WSS when served over HTTPS to avoid mixed-content blocks.
+        const WS_URL = (location.protocol === "https:")
+            ? "wss://test.mosquitto.org:8081"
+            : "ws://test.mosquitto.org:8080";
+        const client = mqtt.connect(WS_URL, {
             clientId: "webdash-" + DEVICE_ID + "-" + Math.random().toString(16).slice(2),
             keepalive: 30,
             reconnectPeriod: 1500
