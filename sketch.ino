@@ -15,12 +15,11 @@ String TOPIC_EVENT = String("accident/") + DEVICE_ID + "/event";
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
-
 MPU6050 mpu(Wire);
 
 const int BUZZER_PIN = 18;
 
-const float ACC_THRESHOLD = 18.0;     // m/s^2
+const float ACC_THRESHOLD = 18.0;
 const int GPS_PERIOD_MS = 1000;
 const int ACC_PRINT_MS = 300;
 
@@ -33,6 +32,25 @@ unsigned long lastAccPrintMs = 0;
 
 bool accidentLatched = false;
 unsigned long accidentLatchMs = 0;
+
+// ----------- Fixed Accident Points -----------
+struct Point {
+  double lat;
+  double lon;
+};
+
+Point accidentPoints[] = {
+  {-6.82354469038552, 39.28146069337019},
+  {-6.821362918736765, 39.281295543719466},
+  {-6.81598127193375, 39.28003309433296},
+  {-6.810852848155616, 39.26699648419273},
+  {-6.798020126855109, 39.22982267917766},
+  {-6.8423013484097845, 39.245180570065315},
+  {-6.834318619600618, 39.32230296448238},
+  {-6.660014272182926, 39.18238932884291}
+};
+
+Point selectedAccidentPoint;
 
 void beep(int ms) {
   digitalWrite(BUZZER_PIN, HIGH);
@@ -48,55 +66,21 @@ void beepPatternAccident() {
 }
 
 void connectWiFi() {
-  Serial.print("[WiFi] Connecting to ");
-  Serial.println(WIFI_SSID);
-
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(250);
-    Serial.print(".");
-    if (millis() - start > 15000) {
-      Serial.println("\n[WiFi] Timeout, retrying...");
-      start = millis();
-    }
   }
-
-  Serial.println();
-  Serial.print("[WiFi] Connected, IP: ");
-  Serial.println(WiFi.localIP());
 }
 
 bool connectMQTT() {
   String clientId = String("wokwi-") + DEVICE_ID + "-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-
-  Serial.print("[MQTT] Connecting to ");
-  Serial.print(MQTT_HOST);
-  Serial.print(":");
-  Serial.println(MQTT_PORT);
-
-  bool ok = mqtt.connect(clientId.c_str());
-  if (ok) {
-    Serial.println("[MQTT] Connected");
-  } else {
-    Serial.print("[MQTT] Failed, rc=");
-    Serial.println(mqtt.state());
-  }
-  return ok;
+  return mqtt.connect(clientId.c_str());
 }
 
 bool publishJson(const String& topic, const String& payload) {
-  bool ok = mqtt.publish(topic.c_str(), payload.c_str());
-  Serial.print("[PUB] ");
-  Serial.print(topic);
-  Serial.print(" -> ");
-  Serial.println(ok ? "OK" : "FAIL");
-  if (!ok) {
-    Serial.println(payload);
-  }
-  return ok;
+  return mqtt.publish(topic.c_str(), payload.c_str());
 }
 
 float totalAccMS2() {
@@ -110,54 +94,42 @@ float totalAccMS2() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("BOOT: serial OK");
+
+  randomSeed((uint32_t)esp_random());
+
+  // Select one accident point per restart
+  int index = random(0, sizeof(accidentPoints) / sizeof(accidentPoints[0]));
+  selectedAccidentPoint = accidentPoints[index];
+
+  Serial.println("BOOT OK");
+  Serial.print("Selected accident location: ");
+  Serial.print(selectedAccidentPoint.lat, 6);
+  Serial.print(", ");
+  Serial.println(selectedAccidentPoint.lon, 6);
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
-  Wire.begin(21, 22); // SDA=D21, SCL=D22 (your diagram)
+  Wire.begin(21, 22);
   mpu.begin();
   mpu.calcGyroOffsets(true);
-
-  Serial.println("=== Accident MQTT Simulation Boot ===");
-  Serial.print("GPS topic: "); Serial.println(TOPIC_GPS);
-  Serial.print("EVT topic: "); Serial.println(TOPIC_EVENT);
-  Serial.print("ACC threshold (m/s^2): "); Serial.println(ACC_THRESHOLD, 2);
 
   connectWiFi();
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   connectMQTT();
-
-  Serial.println("[READY] Open Serial Monitor to see logs.");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WiFi] Lost connection, reconnecting...");
-    connectWiFi();
-  }
-
   if (!mqtt.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectMs > 1500) {
-      lastReconnectMs = now;
-      connectMQTT();
-    }
+    connectMQTT();
   } else {
     mqtt.loop();
   }
 
   unsigned long now = millis();
 
-  if (now - lastAccPrintMs > (unsigned long)ACC_PRINT_MS) {
-    lastAccPrintMs = now;
-    float acc = totalAccMS2();
-    Serial.print("[ACC] total m/s^2 = ");
-    Serial.println(acc, 2);
-  }
-
-  if (mqtt.connected() && (now - lastGpsMs > (unsigned long)GPS_PERIOD_MS)) {
+  if (mqtt.connected() && (now - lastGpsMs > GPS_PERIOD_MS)) {
     lastGpsMs = now;
 
     lat += 0.000010;
@@ -166,13 +138,7 @@ void loop() {
     String payload =
       String("{\"device\":\"") + DEVICE_ID + "\"," +
       "\"lat\":" + String(lat, 6) + "," +
-      "\"lon\":" + String(lon, 6) + "," +
-      "\"ts\":" + String((uint32_t)(now / 1000)) + "}";
-
-    Serial.print("[GPS] ");
-    Serial.print(lat, 6);
-    Serial.print(", ");
-    Serial.println(lon, 6);
+      "\"lon\":" + String(lon, 6) + "}";
 
     publishJson(TOPIC_GPS, payload);
   }
@@ -182,26 +148,21 @@ void loop() {
     accidentLatched = true;
     accidentLatchMs = now;
 
-    Serial.println("!!! ACCIDENT DETECTED !!!");
-    Serial.print("acc m/s^2: "); Serial.println(accNow, 2);
-    Serial.print("at: "); Serial.print(lat, 6); Serial.print(", "); Serial.println(lon, 6);
-
     beepPatternAccident();
 
     String payload =
       String("{\"device\":\"") + DEVICE_ID + "\"," +
       "\"type\":\"ACCIDENT\"," +
-      "\"acc_ms2\":" + String(accNow, 2) + "," +
-      "\"lat\":" + String(lat, 6) + "," +
-      "\"lon\":" + String(lon, 6) + "," +
-      "\"ts\":" + String((uint32_t)(now / 1000)) + "}";
+      "\"lat\":" + String(selectedAccidentPoint.lat, 6) + "," +
+      "\"lon\":" + String(selectedAccidentPoint.lon, 6) + "}";
 
     publishJson(TOPIC_EVENT, payload);
+
+    Serial.println("ACCIDENT DETECTED");
   }
 
   if (accidentLatched && (now - accidentLatchMs > 10000)) {
     accidentLatched = false;
-    Serial.println("[ACCIDENT] latch cleared");
   }
 
   delay(60);

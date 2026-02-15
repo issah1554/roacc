@@ -9,6 +9,37 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .pulse-marker {
+            position: relative;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: rgba(244, 63, 94, 0.9);
+            box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6);
+            animation: pulse 1.6s ease-out infinite;
+        }
+
+        .pulse-marker::after {
+            content: "";
+            position: absolute;
+            inset: -10px;
+            border-radius: 999px;
+            border: 2px solid rgba(244, 63, 94, 0.55);
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6);
+            }
+            70% {
+                box-shadow: 0 0 0 20px rgba(244, 63, 94, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+            }
+        }
+    </style>
 </head>
 
 <body class="relative min-h-screen bg-slate-900 text-slate-900">
@@ -121,13 +152,11 @@
         const map = L.map('map', { zoomControl: false }).setView([-6.7924, 39.2083], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-        let marker = L.marker([-6.7924, 39.2083]).addTo(map).bindPopup("Device: " + DEVICE_ID);
         let accidentMarker = null;
 
-        // Use WSS when served over HTTPS to avoid mixed-content blocks.
-        const WS_URL = (location.protocol === "https:")
-            ? "wss://test.mosquitto.org:8081"
-            : "ws://test.mosquitto.org:8080";
+        // Default to WSS; override with ?ws=ws://host:port if needed.
+        const urlParams = new URLSearchParams(location.search);
+        const WS_URL = urlParams.get("ws") || "wss://test.mosquitto.org:8081";
         brokerUrlEl.textContent = WS_URL;
         deviceIdEl.textContent = DEVICE_ID;
         infoToggleEl.addEventListener("click", (event) => {
@@ -168,27 +197,44 @@
             catch { return; }
 
             if (topic === GPS_TOPIC) {
-                const { lat, lon } = data;
-                marker.setLatLng([lat, lon]);
-                marker.setPopupContent(`Device: ${DEVICE_ID}<br>Lat: ${lat}<br>Lon: ${lon}`);
+                const { lat, lon, vehicle } = data;
+                const vehicleLine = vehicle
+                    ? `<br>Vehicle: ${vehicle.make} ${vehicle.model} (${vehicle.color}, ${vehicle.year})`
+                    : "";
+                const plateLine = vehicle?.plate ? `<br>Plate: ${vehicle.plate}` : "";
                 map.panTo([lat, lon], { animate: true });
             }
 
             if (topic === EVT_TOPIC) {
                 log("ACCIDENT event: " + payload.toString());
-                const { lat, lon, acc_ms2 } = data;
+                const { lat, lon, acc_ms2, vehicle } = data;
                 if (window.matchMedia("(max-width: 639px)").matches) {
                     panelEl.classList.remove("hidden");
                 }
+                const vehicleDetails = vehicle
+                    ? `<div class="mt-2 text-[11px] text-slate-600">
+                        <div class="font-semibold text-slate-800">${vehicle.make} ${vehicle.model}</div>
+                        <div>Type: <span class="font-semibold text-slate-800">${vehicle.type}</span></div>
+                        <div>Plate: <span class="font-semibold text-slate-800">${vehicle.plate}</span></div>
+                        <div>Color: <span class="font-semibold text-slate-800">${vehicle.color}</span></div>
+                        <div>Year: <span class="font-semibold text-slate-800">${vehicle.year}</span></div>
+                    </div>`
+                    : "";
                 latestEventEl.innerHTML = `<div class="text-[11px] font-semibold text-rose-600">ACCIDENT DETECTED</div>
                     <div class="mt-2 grid gap-1 text-[11px] text-slate-600">
                         <div>Acceleration: <span class="font-semibold text-slate-800">${acc_ms2} m/s²</span></div>
                         <div>Latitude: <span class="font-semibold text-slate-800">${lat}</span></div>
                         <div>Longitude: <span class="font-semibold text-slate-800">${lon}</span></div>
-                    </div>`;
+                    </div>${vehicleDetails}`;
 
                 if (accidentMarker) map.removeLayer(accidentMarker);
-                accidentMarker = L.circleMarker([lat, lon], { radius: 10 }).addTo(map)
+                const accidentIcon = L.divIcon({
+                    className: "",
+                    html: '<div class="pulse-marker"></div>',
+                    iconSize: [18, 18],
+                    iconAnchor: [9, 9]
+                });
+                accidentMarker = L.marker([lat, lon], { icon: accidentIcon }).addTo(map)
                     .bindPopup(`ACCIDENT<br>acc: ${acc_ms2} m/s²<br>${lat}, ${lon}`)
                     .openPopup();
             }
