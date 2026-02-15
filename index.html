@@ -3,13 +3,17 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>ESP32 Accident Dashboard (MQTT)</title>
+    <title>ESP32 Accident Dashboard • enhanced</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <!-- Leaflet, Bootstrap Icons, Tailwind -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- extra subtle shadow/transition polish -->
     <style>
+        /* smooth pulse animation (kept) */
         .pulse-marker {
             position: relative;
             width: 18px;
@@ -32,214 +36,468 @@
             0% {
                 box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6);
             }
+
             70% {
                 box-shadow: 0 0 0 20px rgba(244, 63, 94, 0);
             }
+
             100% {
                 box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
             }
         }
+
+        /* custom class for hidden sidebar (cleaner transition) */
+        .sidebar-hidden {
+            transform: translateX(-100%) !important;
+        }
+
+        /* nice thin scrollbar for logs */
+        #log::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #log::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 8px;
+        }
+
+        #log::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 8px;
+        }
+
+        /* map attribution compact */
+        .leaflet-control-attribution {
+            font-size: 8px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 20px;
+            padding: 2px 8px;
+            bottom: 4px;
+            right: 4px;
+        }
     </style>
 </head>
 
-<body class="relative min-h-screen bg-slate-900 text-slate-900">
+<body class="relative min-h-screen bg-slate-900 text-slate-900 antialiased">
+
+    <!-- map background (full) -->
     <div id="map" class="fixed inset-0 z-0"></div>
+
+    <!-- top overlay container (pointer-events-none to allow map clicks through, but buttons inside are pointer-events-auto) -->
     <div class="pointer-events-none relative z-10 min-h-screen">
-        <div id="top" class="pointer-events-auto sticky top-0 border-b border-slate-200 bg-white/90 backdrop-blur">
-            <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-3">
-            <div class="flex items-center gap-3">
-                <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
-                    <span class="text-lg font-semibold">RX</span>
+
+        <!-- TOP BAR (glassmorphic, refined) -->
+        <div id="top"
+            class="pointer-events-auto sticky top-0 border-b border-white/20 bg-white/80 backdrop-blur-md shadow-sm">
+            <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-5 py-2.5">
+                <!-- left logo + title -->
+                <div class="flex items-center gap-3">
+                    <div
+                        class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-slate-800 to-slate-900 text-white shadow-sm ring-1 ring-white/20">
+                        <span class="text-base font-bold tracking-tight">⚡</span>
+                    </div>
+                    <div>
+                        <div class="text-xs font-semibold uppercase tracking-wider text-slate-500/90">ESP32 Accident
+                        </div>
+                        <div class="text-sm font-medium leading-tight text-slate-800">live MQTT · edge telemetry</div>
+                    </div>
                 </div>
-                <div>
-                    <div class="text-sm font-semibold uppercase tracking-widest text-slate-500">ESP32 Accident Dashboard</div>
-                    <div class="text-xs text-slate-500">Live MQTT telemetry</div>
+
+                <!-- right controls: sidebar toggle + small status hint (optional) -->
+                <div class="ml-auto flex items-center gap-1">
+                    <!-- quick status chip (visible only on wide enough) -->
+                    <div class="hidden sm:block mr-2">
+                        <span id="miniStatus"
+                            class="text-xs bg-slate-100 text-slate-700 px-3 py-1.5 rounded-full border border-slate-200/70 shadow-inner flex items-center gap-1.5">
+                            <span class="relative flex h-2 w-2">
+                                <span
+                                    class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            <span id="miniStatusText">connecting</span>
+                        </span>
+                    </div>
+                    <button id="panelToggle"
+                        class="flex h-9 w-9 items-center justify-center rounded-full bg-white/80 text-slate-600 backdrop-blur-sm border border-slate-200/70 shadow-sm hover:bg-white transition-all active:scale-95"
+                        aria-label="Toggle sidebar" aria-expanded="true">
+                        <i id="panelToggleIcon" class="bi bi-layout-sidebar-inset text-lg"></i>
+                    </button>
                 </div>
-            </div>
             </div>
         </div>
-        <main id="panel" class="pointer-events-auto absolute left-4 right-4 top-20 z-10 hidden w-auto flex-col gap-4 sm:left-6 sm:right-auto sm:top-24 sm:flex sm:w-[320px]">
-            <div class="flex flex-col gap-4">
-                <aside class="flex w-full flex-col gap-4">
-                <section class="rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
-                    <div class="text-sm font-semibold text-slate-700">Latest Event</div>
-                    <div id="latestEvent" class="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                        Waiting for accident payload...
+
+        <!-- SIDEBAR (left, under top bar) – glass, rounded, better spacing, live activity panel -->
+        <aside id="panel"
+            class="pointer-events-auto fixed left-4 top-20 z-20 h-[calc(100vh-100px)] w-80 translate-x-0 rounded-2xl border border-slate-200/60 bg-white/80 shadow-2xl backdrop-blur-xl transition-all duration-300 ease-out-cubic overflow-hidden flex flex-col">
+            <!-- sidebar header with gradient -->
+            <div class="px-5 py-4 border-b border-slate-200/60 bg-gradient-to-r from-slate-50 to-white">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="font-semibold text-slate-800 flex items-center gap-1.5"><i
+                                class="bi bi-activity-pulse text-rose-500"></i> Live feed</h2>
+                        <p class="text-xs text-slate-500 mt-0.5">incident & vehicle stream</p>
+                    </div>
+                    <span
+                        class="bg-rose-50 text-rose-700 text-[10px] font-semibold px-2 py-1 rounded-full border border-rose-200">LIVE</span>
+                </div>
+            </div>
+
+            <!-- content area (scrollable) -->
+            <div class="flex-1 overflow-y-auto p-4 space-y-5 scroll-smooth">
+                <!-- LATEST EVENT CARD (prominent) -->
+                <section class="rounded-xl border border-slate-200/70 bg-white/90 shadow-sm overflow-hidden">
+                    <div class="bg-amber-50/80 px-4 py-2 border-b border-amber-100/80 flex items-center gap-2">
+                        <i class="bi bi-exclamation-triangle-fill text-amber-600 text-sm"></i>
+                        <span class="font-semibold text-xs uppercase tracking-wide text-amber-800">Latest event</span>
+                    </div>
+                    <div id="latestEvent" class="p-4 text-sm bg-white">
+                        <div class="text-slate-400 italic flex items-center gap-2">
+                            <i class="bi bi-dot"></i>
+                            <span>Waiting for accident payload...</span>
+                        </div>
                     </div>
                 </section>
-            </aside>
-        </div>
-        <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-sm backdrop-blur">
-            <div class="flex items-center justify-between border-b border-slate-200 px-4 py-2">
-                <div class="text-sm font-semibold text-slate-700">Activity Log</div>
-                <div class="text-xs text-slate-400">Recent MQTT messages</div>
+
+                <!-- ACTIVITY LOG (with improved visibility) -->
+                <section class="rounded-xl border border-slate-200/70 bg-white/90 shadow-sm overflow-hidden">
+                    <div class="bg-slate-50/90 px-4 py-2 border-b border-slate-200/60 flex items-center gap-2">
+                        <i class="bi bi-list-ul text-slate-600 text-sm"></i>
+                        <span class="font-semibold text-xs uppercase tracking-wide text-slate-600">Activity log</span>
+                    </div>
+                    <div id="log"
+                        class="h-40 overflow-auto bg-white/95 p-3 text-xs text-slate-700 leading-relaxed space-y-1.5 font-mono">
+                        <!-- dynamic logs appear here -->
+                        <div class="text-slate-400">[--:--:--] ready</div>
+                    </div>
+                </section>
+
+                <!-- VEHICLE SNAPSHOT (if present in last event, could be dynamic, but we show placeholder for structure) -->
+                <section class="rounded-xl border border-slate-200/70 bg-white/90 shadow-sm overflow-hidden">
+                    <div class="bg-slate-50/90 px-4 py-2 border-b border-slate-200/60 flex items-center gap-2">
+                        <i class="bi bi-truck text-slate-600 text-sm"></i>
+                        <span class="font-semibold text-xs uppercase tracking-wide text-slate-600">last vehicle</span>
+                    </div>
+                    <div id="vehicleSnapshot" class="p-3 text-xs bg-white text-slate-600">
+                        <span class="italic text-slate-400">no data yet</span>
+                    </div>
+                </section>
             </div>
-            <div id="log" class="h-28 overflow-auto px-4 py-3 text-xs text-slate-600"></div>
-        </section>
-        </main>
-        <div id="mapControls" class="pointer-events-auto fixed right-4 top-24 z-20 sm:top-28">
-            <div class="relative flex flex-col items-center gap-2">
-                <button id="zoomIn" class="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white" aria-label="Zoom in">
+
+            <!-- subtle footer with device name -->
+            <div
+                class="border-t border-slate-200/60 px-4 py-2 text-[10px] text-slate-400 bg-slate-50/50 flex justify-between">
+                <span><i class="bi bi-wifi"></i> device: <span id="deviceIdFooter">esp32-01</span></span>
+                <span><i class="bi bi-clock"></i> realtime</span>
+            </div>
+        </aside>
+
+        <!-- RIGHT CONTROLS (map buttons + info panel) refined -->
+        <div id="mapControls" class="pointer-events-auto fixed right-5 top-24 z-20 flex flex-col items-center gap-3">
+            <!-- button group with glass effect -->
+            <div
+                class="flex flex-col gap-2.5 bg-white/70 backdrop-blur-md p-2 rounded-2xl border border-slate-200/60 shadow-lg">
+                <button id="zoomIn"
+                    class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/90 text-slate-700 border border-slate-200/70 shadow-sm hover:bg-white hover:scale-105 transition-all active:scale-95"
+                    aria-label="Zoom in">
                     <i class="bi bi-plus-lg"></i>
                 </button>
-                <button id="zoomOut" class="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white" aria-label="Zoom out">
+                <button id="zoomOut"
+                    class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/90 text-slate-700 border border-slate-200/70 shadow-sm hover:bg-white hover:scale-105 transition-all active:scale-95"
+                    aria-label="Zoom out">
                     <i class="bi bi-dash-lg"></i>
                 </button>
-                <button id="infoToggle" class="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur hover:bg-white" aria-label="Toggle info">
+                <button id="infoToggle"
+                    class="flex h-10 w-10 items-center justify-center rounded-xl bg-white/90 text-slate-700 border border-slate-200/70 shadow-sm hover:bg-white hover:scale-105 transition-all active:scale-95"
+                    aria-label="Toggle info">
                     <i class="bi bi-info-lg"></i>
                 </button>
-                <div id="infoPanel" class="pointer-events-auto absolute right-full top-1/2 hidden w-72 -translate-y-1/2 rounded-2xl border border-slate-200 bg-white/95 p-4 text-xs text-slate-700 shadow-lg backdrop-blur">
-            <div class="text-sm font-semibold text-slate-800">Connection Details</div>
-            <div class="mt-3 space-y-3">
-                <div>
-                    <div class="text-[11px] uppercase tracking-wide text-slate-400">Connected</div>
-                    <div class="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-600">
-                        <div>GPS: <span id="gpsTopic" class="font-semibold text-slate-800"></span></div>
-                        <div>Event: <span id="evtTopic" class="font-semibold text-slate-800"></span></div>
-                    </div>
-                </div>
-                <div>
-                    <div class="text-[11px] uppercase tracking-wide text-slate-400">Connection</div>
-                    <div class="mt-2 space-y-1 text-[11px] text-slate-600">
-                        <div class="flex items-center justify-between">
-                            <span>Status</span>
-                            <span id="status" class="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-500">Disconnected</span>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <span>Broker</span>
-                            <span id="brokerUrl" class="font-semibold text-slate-800"></span>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <span>Device</span>
-                            <span id="deviceId" class="font-semibold text-slate-800"></span>
-                        </div>
-                    </div>
-                </div>
             </div>
+
+            <!-- floating info panel (connected to infoToggle) -->
+            <div id="infoPanel"
+                class="absolute right-full top-1/2 mr-3 hidden w-72 -translate-y-1/2 rounded-2xl border border-slate-200/70 bg-white/95 p-5 text-xs text-slate-700 shadow-2xl backdrop-blur-lg transition-opacity">
+                <div class="absolute -right-1 top-1/2 h-4 w-4 rotate-45 bg-white/95 border-r border-t border-slate-200/70"
+                    style="margin-top: -8px;"></div> <!-- small arrow -->
+                <div class="text-sm font-semibold text-slate-800 flex items-center gap-1.5"><i
+                        class="bi bi-info-circle-fill text-amber-600"></i> Connection details</div>
+                <div class="mt-4 space-y-3">
+                    <div>
+                        <div class="text-[10px] uppercase tracking-wider text-slate-400 mb-1">MQTT topics</div>
+                        <div class="bg-slate-50 rounded-lg p-2 space-y-1 font-mono text-[10px] break-all">
+                            <div><span class="text-slate-500">GPS:</span> <span id="gpsTopic"
+                                    class="font-semibold text-slate-800"></span></div>
+                            <div><span class="text-slate-500">Event:</span> <span id="evtTopic"
+                                    class="font-semibold text-slate-800"></span></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <div class="text-[10px] uppercase text-slate-400">status</div>
+                            <div id="status"
+                                class="mt-1 inline-block rounded-full border bg-emerald-50 px-3 py-1 text-[10px] font-semibold text-emerald-700">
+                                Disconnected</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] uppercase text-slate-400">broker</div>
+                            <div id="brokerUrl" class="mt-1 font-mono text-[10px] font-semibold truncate">wss://...
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] uppercase text-slate-400">device id</div>
+                        <div id="deviceId" class="mt-1 font-mono text-xs font-semibold">esp32-01</div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- scripts -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        const DEVICE_ID = "esp32-01";
-        const GPS_TOPIC = `accident/${DEVICE_ID}/gps`;
-        const EVT_TOPIC = `accident/${DEVICE_ID}/event`;
+        (function () {
+            // --- constants & elements ---
+            const DEVICE_ID = "esp32-01";
+            const GPS_TOPIC = `accident/${DEVICE_ID}/gps`;
+            const EVT_TOPIC = `accident/${DEVICE_ID}/event`;
 
-        document.getElementById("gpsTopic").textContent = GPS_TOPIC;
-        document.getElementById("evtTopic").textContent = EVT_TOPIC;
+            // DOM elements
+            const gpsTopicSpan = document.getElementById("gpsTopic");
+            const evtTopicSpan = document.getElementById("evtTopic");
+            const statusEl = document.getElementById("status");
+            const brokerUrlEl = document.getElementById("brokerUrl");
+            const deviceIdEl = document.getElementById("deviceId");
+            const deviceIdFooter = document.getElementById("deviceIdFooter");
+            const latestEventEl = document.getElementById("latestEvent");
+            const logEl = document.getElementById("log");
+            const vehicleSnapshotEl = document.getElementById("vehicleSnapshot");
+            const panelEl = document.getElementById("panel");
+            const panelToggle = document.getElementById("panelToggle");
+            const panelToggleIcon = document.getElementById("panelToggleIcon");
+            const infoPanel = document.getElementById("infoPanel");
+            const infoToggle = document.getElementById("infoToggle");
+            const zoomIn = document.getElementById("zoomIn");
+            const zoomOut = document.getElementById("zoomOut");
+            const miniStatus = document.getElementById("miniStatusText");
 
-        const statusEl = document.getElementById("status");
-        const brokerUrlEl = document.getElementById("brokerUrl");
-        const deviceIdEl = document.getElementById("deviceId");
-        const latestEventEl = document.getElementById("latestEvent");
-        const logEl = document.getElementById("log");
-        const panelEl = document.getElementById("panel");
-        const infoPanelEl = document.getElementById("infoPanel");
-        const infoToggleEl = document.getElementById("infoToggle");
-        const zoomInEl = document.getElementById("zoomIn");
-        const zoomOutEl = document.getElementById("zoomOut");
+            // set topic displays
+            if (gpsTopicSpan) gpsTopicSpan.innerText = GPS_TOPIC;
+            if (evtTopicSpan) evtTopicSpan.innerText = EVT_TOPIC;
+            if (deviceIdEl) deviceIdEl.innerText = DEVICE_ID;
+            if (deviceIdFooter) deviceIdFooter.innerText = DEVICE_ID;
 
-        function log(msg) {
-            const line = document.createElement("div");
-            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            logEl.appendChild(line);
-            logEl.scrollTop = logEl.scrollHeight;
+            // --- logging helper (clean) ---
+            function log(message) {
+                if (!logEl) return;
+                const line = document.createElement("div");
+                const timestamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                line.innerHTML = `<span class="text-slate-400">[${timestamp}]</span> <span class="text-slate-700">${message}</span>`;
+                logEl.appendChild(line);
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+
+            // initial log
+            log("dashboard initialized · waiting for MQTT");
+
+            // --- leaflet map ---
+            const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([-6.7924, 39.2083], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+
+            let accidentMarker = null;
+
+            // --- connection params ---
+            const urlParams = new URLSearchParams(location.search);
+            const WS_URL = urlParams.get("ws") || "wss://test.mosquitto.org:8081";
+            if (brokerUrlEl) brokerUrlEl.innerText = WS_URL.replace(/^wss?:\/\//, '');
+
+            // --- map controls ---
+            zoomIn.addEventListener("click", () => map.zoomIn());
+            zoomOut.addEventListener("click", () => map.zoomOut());
+
+            // --- info panel toggle (with click-outside) ---
+            infoToggle.addEventListener("click", (e) => {
+                e.stopPropagation();
+                infoPanel.classList.toggle("hidden");
+            });
+            document.addEventListener("click", (e) => {
+                if (!infoPanel.contains(e.target) && !infoToggle.contains(e.target)) {
+                    infoPanel.classList.add("hidden");
+                }
+            });
+
+            // --- SIDEBAR TOGGLE (enhanced: smooth, icon flip) ---
+            panelToggle.addEventListener("click", () => {
+                const isHidden = panelEl.classList.toggle("sidebar-hidden");
+                // update aria-expanded
+                panelToggle.setAttribute("aria-expanded", String(!isHidden));
+                // toggle icon between sidebar-inset and sidebar-inset-reverse (using flip alternative)
+                panelToggleIcon.className = isHidden
+                    ? "bi bi-layout-sidebar-inset-reverse text-lg"
+                    : "bi bi-layout-sidebar-inset text-lg";
+                // optional: move toggle icon a bit
+            });
+
+            // ensure initial state (icon correct)
+            panelToggleIcon.className = "bi bi-layout-sidebar-inset text-lg";
+
+            // --- MQTT setup ---
+            const client = mqtt.connect(WS_URL, {
+                clientId: "webdash-" + DEVICE_ID + "-" + Math.random().toString(16).slice(2, 8),
+                keepalive: 30,
+                reconnectPeriod: 1500,
+            });
+
+            client.on("connect", () => {
+                statusEl.innerText = "Connected";
+                statusEl.className = "mt-1 inline-block rounded-full border border-emerald-200 bg-emerald-100 px-3 py-1 text-[10px] font-semibold text-emerald-800";
+                if (miniStatus) miniStatus.innerText = "connected";
+                log("✅ MQTT connected to broker");
+                client.subscribe([GPS_TOPIC, EVT_TOPIC], (err) => {
+                    if (!err) log(`subscribed to ${GPS_TOPIC}, ${EVT_TOPIC}`);
+                });
+            });
+
+            client.on("reconnect", () => {
+                log("🔄 reconnecting...");
+                if (miniStatus) miniStatus.innerText = "reconnecting";
+            });
+
+            client.on("close", () => {
+                statusEl.innerText = "Disconnected";
+                statusEl.className = "mt-1 inline-block rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-[10px] font-semibold text-rose-700";
+                if (miniStatus) miniStatus.innerText = "offline";
+                log("⚠️ MQTT disconnected");
+            });
+
+            client.on("error", (err) => {
+                log("❌ MQTT error: " + err.message);
+            });
+
+            // --- message handling ---
+            client.on("message", (topic, payload) => {
+                let data;
+                try {
+                    data = JSON.parse(payload.toString());
+                } catch {
+                    log("⚠️ invalid JSON on " + topic);
+                    return;
+                }
+
+                if (topic === GPS_TOPIC) {
+                    const { lat, lon, vehicle } = data;
+                    if (lat && lon) {
+                        map.panTo([lat, lon], { animate: true, duration: 1 });
+                        log(`📍 GPS update (${lat.toFixed(4)}, ${lon.toFixed(4)})`);
+                        // optionally show vehicle short in snapshot
+                        if (vehicle && vehicleSnapshotEl) {
+                            vehicleSnapshotEl.innerHTML = `<div class="flex items-center gap-1.5"><i class="bi bi-car-front-fill"></i> ${vehicle.make || '?'} ${vehicle.model || ''} · ${vehicle.color || ''} · ${vehicle.plate || ''}</div>`;
+                        }
+                    }
+                }
+
+                if (topic === EVT_TOPIC) {
+                    log("🚨 ACCIDENT event: " + JSON.stringify(data).substring(0, 100) + (JSON.stringify(data).length > 100 ? '…' : ''));
+                    const { lat, lon, acc_ms2, vehicle } = data;
+
+                    // format latest event card richly
+                    let vehicleHtml = '';
+                    if (vehicle) {
+                        vehicleHtml = `
+                            <div class="mt-3 pt-2 border-t border-slate-200 text-slate-700 text-xs">
+                                <div class="font-semibold text-slate-800 flex items-center gap-1"><i class="bi bi-truck"></i> ${vehicle.make || ''} ${vehicle.model || ''}</div>
+                                <div class="grid grid-cols-2 gap-x-2 gap-y-1 mt-1.5 text-[11px]">
+                                    <span class="text-slate-500">plate:</span><span class="font-mono">${vehicle.plate || '—'}</span>
+                                    <span class="text-slate-500">color:</span><span>${vehicle.color || '—'}</span>
+                                    <span class="text-slate-500">year:</span><span>${vehicle.year || '—'}</span>
+                                </div>
+                            </div>
+                        `;
+                        // update vehicle snapshot
+                        if (vehicleSnapshotEl) {
+                            vehicleSnapshotEl.innerHTML = `<div class="flex items-center gap-1.5"><i class="bi bi-car-front-fill"></i> ${vehicle.make || ''} ${vehicle.model || ''} (${vehicle.plate || 'no plate'})</div>`;
+                        }
+                    } else {
+                        vehicleSnapshotEl.innerHTML = `<span class="italic text-slate-400">no vehicle attached</span>`;
+                    }
+
+                    latestEventEl.innerHTML = `
+                        <div class="flex items-center gap-2 text-rose-600 font-semibold text-sm"><i class="bi bi-exclamation-triangle-fill"></i> ACCIDENT DETECTED</div>
+                        <div class="mt-3 grid grid-cols-2 gap-2 text-xs bg-rose-50/70 p-3 rounded-lg border border-rose-200">
+                            <div><span class="text-slate-500">accel</span><br><span class="font-bold text-rose-800">${acc_ms2 ?? '?'} m/s²</span></div>
+                            <div><span class="text-slate-500">lat</span><br><span class="font-mono">${lat?.toFixed(4) ?? '?'}</span></div>
+                            <div><span class="text-slate-500">lng</span><br><span class="font-mono">${lon?.toFixed(4) ?? '?'}</span></div>
+                        </div>
+                        ${vehicleHtml}
+                    `;
+
+                    // update map marker
+                    if (lat && lon) {
+                        if (accidentMarker) map.removeLayer(accidentMarker);
+                        const accidentIcon = L.divIcon({
+                            className: "",
+                            html: '<div class="pulse-marker"></div>',
+                            iconSize: [18, 18],
+                            iconAnchor: [9, 9]
+                        });
+                        accidentMarker = L.marker([lat, lon], { icon: accidentIcon }).addTo(map)
+                            .bindPopup(`
+                                <b>🚨 accident</b><br>
+                                acc: ${acc_ms2} m/s²<br>
+                                ${lat.toFixed(4)}, ${lon.toFixed(4)}
+                            `)
+                            .openPopup();
+                        map.panTo([lat, lon]);
+                    }
+                }
+            });
+
+            // small helper to show broker url if not set
+            if (brokerUrlEl && !brokerUrlEl.innerText) brokerUrlEl.innerText = WS_URL;
+
+            // update mini status initially
+            if (miniStatus) miniStatus.innerText = "connecting";
+        })();
+    </script>
+    <!-- extra style for custom transition curve -->
+    <style>
+        .transition-ease-out-cubic {
+            transition-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
         }
 
-        const map = L.map('map', { zoomControl: false }).setView([-6.7924, 39.2083], 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+        .duration-300 {
+            transition-duration: 300ms;
+        }
 
-        let accidentMarker = null;
+        #panel {
+            transition-property: transform, opacity;
+        }
 
-        // Default to WSS; override with ?ws=ws://host:port if needed.
-        const urlParams = new URLSearchParams(location.search);
-        const WS_URL = urlParams.get("ws") || "wss://test.mosquitto.org:8081";
-        brokerUrlEl.textContent = WS_URL;
-        deviceIdEl.textContent = DEVICE_ID;
-        infoToggleEl.addEventListener("click", (event) => {
-            event.stopPropagation();
-            infoPanelEl.classList.toggle("hidden");
-        });
-        document.addEventListener("click", (event) => {
-            if (!infoPanelEl.contains(event.target) && !infoToggleEl.contains(event.target)) {
-                infoPanelEl.classList.add("hidden");
+        /* hidden utility */
+        .hidden {
+            display: none !important;
+        }
+
+        /* arrow for infopanel */
+        #infoPanel:not(.hidden) {
+            display: block;
+        }
+
+        /* smoother sidebar on small */
+        @media (max-width: 640px) {
+            #panel {
+                width: calc(100% - 2rem);
+                left: 1rem;
             }
-        });
-        zoomInEl.addEventListener("click", () => map.zoomIn());
-        zoomOutEl.addEventListener("click", () => map.zoomOut());
+        }
 
-        const client = mqtt.connect(WS_URL, {
-            clientId: "webdash-" + DEVICE_ID + "-" + Math.random().toString(16).slice(2),
-            keepalive: 30,
-            reconnectPeriod: 1500
-        });
-
-        client.on("connect", () => {
-            statusEl.textContent = "Connected";
-            statusEl.className = "rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700";
-            log("MQTT connected");
-            client.subscribe([GPS_TOPIC, EVT_TOPIC]);
-        });
-
-        client.on("reconnect", () => log("MQTT reconnecting..."));
-        client.on("close", () => {
-            statusEl.textContent = "Disconnected";
-            statusEl.className = "rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700";
-        });
-        client.on("error", (err) => log("MQTT error: " + err.message));
-
-        client.on("message", (topic, payload) => {
-            let data;
-            try { data = JSON.parse(payload.toString()); }
-            catch { return; }
-
-            if (topic === GPS_TOPIC) {
-                const { lat, lon, vehicle } = data;
-                const vehicleLine = vehicle
-                    ? `<br>Vehicle: ${vehicle.make} ${vehicle.model} (${vehicle.color}, ${vehicle.year})`
-                    : "";
-                const plateLine = vehicle?.plate ? `<br>Plate: ${vehicle.plate}` : "";
-                map.panTo([lat, lon], { animate: true });
-            }
-
-            if (topic === EVT_TOPIC) {
-                log("ACCIDENT event: " + payload.toString());
-                const { lat, lon, acc_ms2, vehicle } = data;
-                if (window.matchMedia("(max-width: 639px)").matches) {
-                    panelEl.classList.remove("hidden");
-                }
-                const vehicleDetails = vehicle
-                    ? `<div class="mt-2 text-[11px] text-slate-600">
-                        <div class="font-semibold text-slate-800">${vehicle.make} ${vehicle.model}</div>
-                        <div>Type: <span class="font-semibold text-slate-800">${vehicle.type}</span></div>
-                        <div>Plate: <span class="font-semibold text-slate-800">${vehicle.plate}</span></div>
-                        <div>Color: <span class="font-semibold text-slate-800">${vehicle.color}</span></div>
-                        <div>Year: <span class="font-semibold text-slate-800">${vehicle.year}</span></div>
-                    </div>`
-                    : "";
-                latestEventEl.innerHTML = `<div class="text-[11px] font-semibold text-rose-600">ACCIDENT DETECTED</div>
-                    <div class="mt-2 grid gap-1 text-[11px] text-slate-600">
-                        <div>Acceleration: <span class="font-semibold text-slate-800">${acc_ms2} m/s²</span></div>
-                        <div>Latitude: <span class="font-semibold text-slate-800">${lat}</span></div>
-                        <div>Longitude: <span class="font-semibold text-slate-800">${lon}</span></div>
-                    </div>${vehicleDetails}`;
-
-                if (accidentMarker) map.removeLayer(accidentMarker);
-                const accidentIcon = L.divIcon({
-                    className: "",
-                    html: '<div class="pulse-marker"></div>',
-                    iconSize: [18, 18],
-                    iconAnchor: [9, 9]
-                });
-                accidentMarker = L.marker([lat, lon], { icon: accidentIcon }).addTo(map)
-                    .bindPopup(`ACCIDENT<br>acc: ${acc_ms2} m/s²<br>${lat}, ${lon}`)
-                    .openPopup();
-            }
-        });
-    </script>
+        #log div {
+            line-height: 1.5;
+        }
+    </style>
 </body>
 
 </html>
